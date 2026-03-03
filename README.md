@@ -11,10 +11,11 @@ A data science platform that evaluates the financial health of publicly traded c
 3. [Data Sources](#3-data-sources)
 4. [Project Architecture](#4-project-architecture)
 5. [Implementation Roadmap](#5-implementation-roadmap)
-6. [Financial Metrics Reference](#6-financial-metrics-reference)
-7. [Project Structure](#7-project-structure)
-8. [Setup & Installation](#8-setup--installation)
-9. [Usage](#9-usage)
+6. [Target Variables](#6-target-variables)
+7. [Financial Metrics Reference](#7-financial-metrics-reference)
+8. [Project Structure](#8-project-structure)
+9. [Setup & Installation](#9-setup--installation)
+10. [Usage](#10-usage)
 
 ---
 
@@ -283,7 +284,110 @@ The SEC also exposes a structured JSON API (`data.sec.gov`) that provides financ
 
 ---
 
-## 6. Financial Metrics Reference
+## 6. Target Variables
+
+Defining the target variable is one of the most critical decisions in this project. The options below range from simple rule-based labels to continuous outputs — each with different data requirements and analytical goals.
+
+---
+
+### Option 1 — Binary Classification (Primary Approach)
+
+Predict **Yes/No** for a distress event within a 1–2 year forward window:
+
+| Target | Definition | Source |
+|---|---|---|
+| `bankruptcy` | Company filed Chapter 7 or Chapter 11 | EDGAR, UCLA-LoPucki Bankruptcy Research Database |
+| `default` | Missed a debt payment or underwent debt restructuring | Bloomberg, Moody's, EDGAR 8-K filings |
+| `delisted_financial` | Stock delisted due to financial failure (not M&A or voluntary) | NYSE/NASDAQ delisting notices |
+| `distress_composite` | Any of the above, OR Z-Score drops below 1.81 in the next year | Derived from your own computed data |
+
+**Best for:** Maximum data availability, interpretable output, standard academic benchmarks.
+
+> **Recommended starting point:** Use `distress_composite` with the Z-Score threshold as a proxy. This generates labels automatically from SEC data alone — no external label source required.
+
+---
+
+### Option 2 — Multi-class Classification
+
+Predict **which risk zone** the company falls into:
+
+**Altman Z-Score zones (3 classes):**
+```
+0 = Safe     (Z > 2.99)   — low distress risk
+1 = Grey     (1.81 ≤ Z ≤ 2.99) — ambiguous, monitor closely
+2 = Distress (Z < 1.81)   — high bankruptcy risk
+```
+
+**Credit risk tier (3 classes):**
+```
+0 = Investment Grade       — strong financial position
+1 = High Yield / Speculative — elevated risk
+2 = Distressed / Near-Default — immediate concern
+```
+
+**Best for:** Granular risk segmentation and peer benchmarking across zones.
+
+---
+
+### Option 3 — Regression (Continuous Output)
+
+Predict a **numeric score** rather than a class:
+
+| Target | Definition | Why Useful |
+|---|---|---|
+| `z_score_next_year` | Predict next year's Altman Z-Score | Captures trajectory, not just threshold crossing |
+| `distress_probability` | Calibrated probability from a trained classifier | Readable as "37% chance of distress in 2 years" |
+| `future_stock_return` | 1-year forward stock return as market-implied health proxy | Reflects market's collective financial assessment |
+| `credit_spread` | Bond yield minus risk-free rate | Direct measure of perceived default risk |
+
+**Best for:** Ranking companies by risk severity, continuous monitoring dashboards.
+
+---
+
+### Recommended Strategy for This Project
+
+Given the available data sources, the optimal approach is layered:
+
+```
+Primary target:    binary `distress_flag`
+                   → 1 if next year's Z-Score < 1.81, else 0
+                   → Fully computable from SEC data alone
+
+Secondary target:  3-class `altman_zone`
+                   → Safe / Grey / Distress
+
+Regression output: `z_score_next_year`
+                   → Predict the actual score, not just the zone
+```
+
+---
+
+### Handling Class Imbalance
+
+Real distress events are rare (~1–3% of companies per year), creating severe class imbalance. Strategies to handle this:
+
+| Strategy | Description |
+|---|---|
+| **SMOTE** | Synthetically oversample the minority (distressed) class |
+| **Class weighting** | Penalize missing a distress case more heavily during training |
+| **Threshold tuning** | Lower the decision threshold (e.g., flag at 30% probability, not 50%) |
+| **Z-Score proxy label** | Increases positive cases since the grey zone is much larger than actual bankruptcies |
+
+---
+
+### Decision Guide
+
+```
+Do you have access to real bankruptcy / default labels?
+  ├── YES → Binary classification with real labels + class weighting
+  └── NO  → Use Z-Score < 1.81 as proxy label (fully derived from SEC data)
+              ├── Binary:      distressed (1) vs. not distressed (0)
+              └── Multi-class: Safe / Grey / Distress zones
+```
+
+---
+
+## 7. Financial Metrics Reference
 
 ### Liquidity
 | Metric | Formula |
@@ -337,7 +441,7 @@ The SEC also exposes a structured JSON API (`data.sec.gov`) that provides financ
 
 ---
 
-## 7. Project Structure
+## 8. Project Structure
 
 ```
 Project Data Science/
@@ -383,7 +487,7 @@ Project Data Science/
 
 ---
 
-## 8. Setup & Installation
+## 9. Setup & Installation
 
 ```bash
 # Clone the repository
@@ -410,7 +514,7 @@ jupyter notebook main.ipynb
 
 ---
 
-## 9. Usage
+## 10. Usage
 
 ### Step 1: Collect Company Metadata
 ```bash
