@@ -22,24 +22,27 @@ from urllib3.util.retry import Retry
 from collections import deque
 
 # ── Config ───────────────────────────────────────────────────────────────────
-MAX_WORKERS        = 5       # Start conservative — increase if no 429s
-REQUESTS_PER_SEC   = 5.0     # Initial rate (SEC allows ~10/s but be safe)
-MIN_RATE           = 1.0     # Floor: never go below 1 req/s
-MAX_RATE           = 9.0     # Ceiling: never exceed 9 req/s
-BACKOFF_FACTOR     = 0.5     # Multiply rate by this on 429  (5 → 2.5)
-RECOVERY_FACTOR    = 1.1     # Multiply rate by this after N successes
-RECOVERY_AFTER     = 50      # Successes before speeding back up
-CHECKPOINT_FILE    = "./data/checkpoint.json"
-OUTPUT_FILE        = "./data/company_tickers.csv"
-LOG_FILE           = "./data/fetch.log"
+MAX_WORKERS = 5  # Start conservative — increase if no 429s
+REQUESTS_PER_SEC = 5.0  # Initial rate (SEC allows ~10/s but be safe)
+MIN_RATE = 1.0  # Floor: never go below 1 req/s
+MAX_RATE = 9.0  # Ceiling: never exceed 9 req/s
+BACKOFF_FACTOR = 0.5  # Multiply rate by this on 429  (5 → 2.5)
+RECOVERY_FACTOR = 1.1  # Multiply rate by this after N successes
+RECOVERY_AFTER = 50  # Successes before speeding back up
+CHECKPOINT_FILE = "./data/checkpoint.json"
+OUTPUT_FILE = "./data/company_tickers.csv"
+LOG_FILE = "./data/fetch.log"
 
 EXTRA_FIELDS = [
     "sicDescription",
     "exchanges",
     "entityType",
     "ownerOrg",
-    "insiderTransactionForOwnerExists",
-    "insiderTransactionForIssuerExists",
+    "sic",
+    "category",
+    "fiscalYearEnd",
+    "addresses",
+    "phone",
 ]
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -53,8 +56,18 @@ log = logging.getLogger(__name__)
 
 # ── Headers ──────────────────────────────────────────────────────────────────
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36"
-HEADERS_COMPANY = {"User-Agent": UA, "Accept": "application/json",        "Accept-Encoding": "gzip, deflate, br", "host": "www.sec.gov"}
-HEADERS_SUB     = {"User-Agent": UA, "Accept": "application/xhtml+xml,*/*;q=0.8", "Accept-Encoding": "gzip, deflate, br", "host": "data.sec.gov"}
+HEADERS_COMPANY = {
+    "User-Agent": UA,
+    "Accept": "application/json",
+    "Accept-Encoding": "gzip, deflate, br",
+    "host": "www.sec.gov",
+}
+HEADERS_SUB = {
+    "User-Agent": UA,
+    "Accept": "application/xhtml+xml,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "host": "data.sec.gov",
+}
 
 
 # ── Thread-safe adaptive rate limiter ────────────────────────────────────────
@@ -67,10 +80,10 @@ class AdaptiveRateLimiter:
     """
 
     def __init__(self, initial_rate: float):
-        self._lock           = threading.RLock()
-        self._rate           = initial_rate
-        self._timestamps     = deque()
-        self._pause_until    = 0.0
+        self._lock = threading.RLock()
+        self._rate = initial_rate
+        self._timestamps = deque()
+        self._pause_until = 0.0
         self._success_streak = 0
 
     def acquire(self):
@@ -111,7 +124,9 @@ class AdaptiveRateLimiter:
             self._rate = max(self._rate * BACKOFF_FACTOR, MIN_RATE)
             wait = retry_after if retry_after else 60
             self._pause_until = time.monotonic() + wait
-            log.warning(f"429 received — pausing {wait}s, new rate -> {self._rate:.1f} req/s")
+            log.warning(
+                f"429 received — pausing {wait}s, new rate -> {self._rate:.1f} req/s"
+            )
 
 
 # ── Session with retry ───────────────────────────────────────────────────────
@@ -134,7 +149,9 @@ def get_with_429_retry(session, url, headers, max_retries=8):
         resp = session.get(url, headers=headers, timeout=30)
         if resp.status_code == 429:
             wait = int(resp.headers.get("Retry-After", 0)) or min(30 * attempt, 300)
-            log.warning(f"429 on {url} — waiting {wait}s (attempt {attempt}/{max_retries})")
+            log.warning(
+                f"429 on {url} — waiting {wait}s (attempt {attempt}/{max_retries})"
+            )
             time.sleep(wait)
             continue
         resp.raise_for_status()
@@ -149,6 +166,7 @@ def load_checkpoint():
             return json.load(f)
     return {}
 
+
 def save_checkpoint(data):
     tmp = CHECKPOINT_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -158,7 +176,7 @@ def save_checkpoint(data):
 
 # ── Worker ───────────────────────────────────────────────────────────────────
 def fetch_submission(session, limiter, index, cik, max_retries=5):
-    url    = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     result = {f: None for f in EXTRA_FIELDS}
 
     for attempt in range(1, max_retries + 1):
@@ -182,12 +200,12 @@ def fetch_submission(session, limiter, index, cik, max_retries=5):
             code = e.response.status_code if e.response is not None else "?"
             log.warning(f"HTTP {code} for CIK {cik} (attempt {attempt})")
             if attempt < max_retries:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
         except Exception as e:
             log.warning(f"Error CIK {cik} attempt {attempt}: {e}")
             if attempt < max_retries:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
     log.error(f"Giving up on CIK {cik} after {max_retries} attempts")
     return index, result
@@ -197,7 +215,9 @@ def fetch_submission(session, limiter, index, cik, max_retries=5):
 def main():
     log.info("Fetching company ticker list...")
     session = make_session()
-    resp = get_with_429_retry(session, "https://data.sec.gov/files/company_tickers.json", HEADERS_COMPANY)
+    resp = get_with_429_retry(
+        session, "https://data.sec.gov/files/company_tickers.json", HEADERS_COMPANY
+    )
 
     df = pd.DataFrame.from_dict(resp.json(), orient="index")
     df["cik_str"] = df["cik_str"].astype(str).str.zfill(10)
@@ -207,7 +227,7 @@ def main():
     total = len(df)
     log.info(f"Total companies: {total:,}")
 
-    checkpoint   = load_checkpoint()
+    checkpoint = load_checkpoint()
     already_done = set(checkpoint.keys())
     log.info(f"Already processed: {len(already_done):,} — resuming")
 
@@ -216,19 +236,24 @@ def main():
             for field, val in fields.items():
                 df.at[idx, field] = val
 
-    work = [(idx, row["cik_str"]) for idx, row in df.iterrows() if row["cik_str"] not in already_done]
+    work = [
+        (idx, row["cik_str"])
+        for idx, row in df.iterrows()
+        if row["cik_str"] not in already_done
+    ]
     log.info(f"Remaining: {len(work):,}")
 
     try:
         from tqdm import tqdm
+
         progress = tqdm(total=len(work), desc="Fetching", unit="co")
     except ImportError:
         progress = None
 
-    limiter    = AdaptiveRateLimiter(initial_rate=REQUESTS_PER_SEC)
+    limiter = AdaptiveRateLimiter(initial_rate=REQUESTS_PER_SEC)
     SAVE_EVERY = 500
-    completed  = 0
-    lock       = threading.Lock()
+    completed = 0
+    lock = threading.Lock()
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
