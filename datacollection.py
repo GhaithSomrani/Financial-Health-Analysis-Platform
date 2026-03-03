@@ -36,7 +36,7 @@ LOG_FILE           = "./data/fetch.log"
 EXTRA_FIELDS = [
     "sicDescription",
     "exchanges",
-    "operating",
+    "entityType",
     "ownerOrg",
     "insiderTransactionForOwnerExists",
     "insiderTransactionForIssuerExists",
