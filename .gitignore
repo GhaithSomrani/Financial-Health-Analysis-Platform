@@ -1,0 +1,5 @@
+data/*/*.json
+checkpoint.json
+data/*.zip
+venv/
+*.log
